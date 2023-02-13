@@ -12,6 +12,7 @@ import (
 
 	// tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -31,11 +32,16 @@ type botConfig struct {
 }
 
 type App struct {
-	config     *appConfig
-	tg_bot     *tgbotapi.BotAPI
-	mq_context *context.Context
-	mq_queue   *amqp.Queue
-	mq_channel *amqp.Channel
+	config      *appConfig
+	tg_bot      *tgbotapi.BotAPI
+	mq_context  *context.Context
+	mq_queue    *amqp.Queue
+	mq_channel  *amqp.Channel
+	mq_consumer *<-chan amqp.Delivery
+}
+
+type SendMsg struct {
+	Text string `json:"text"`
 }
 
 func (app *App) StartBot() {
@@ -76,7 +82,7 @@ func (app *App) StartBot() {
 		"hello", // name
 		false,   // durable
 		false,   // delete when unused
-		false,   // exclusive
+		true,    // exclusive
 		false,   // no-wait
 		nil,     // arguments
 	)
@@ -84,6 +90,18 @@ func (app *App) StartBot() {
 	app.mq_queue = &q
 	ctx, cancelmq := context.WithTimeout(context.Background(), 5*time.Second)
 	app.mq_context = &ctx
+
+	msgs, err := ch.Consume(
+		q.Name, // queue
+		"",     // consumer
+		true,   // auto-ack
+		false,  // exclusive
+		false,  // no-local
+		false,  // no-wait
+		nil,    // args
+	)
+	failOnError(err, "Failed to register a consumer")
+	app.mq_consumer = &msgs
 	defer cancelmq()
 
 	// Tell the user the bot is online
@@ -137,20 +155,41 @@ func (app *App) receiveUpdates(ctx context.Context, updates tgbotapi.UpdatesChan
 					// }
 
 					//
-					
+					corrId := "42"
+
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
 					//
 					body := b2
 					err = app.mq_channel.PublishWithContext(ctx,
-						"",                // exchange
-						app.mq_queue.Name, // routing key
-						false,             // mandatory
-						false,             // immediate
+						"",          // exchange
+						"rpc_queue", // routing key
+						false,       // mandatory
+						false,       // immediate
 						amqp.Publishing{
-							ContentType: "text/plain",
-							Body:        []byte(body),
+							ContentType:   "text/plain",
+							CorrelationId: corrId,
+							ReplyTo:       app.mq_queue.Name,
+							Body:          []byte(body),
 						})
 					failOnError(err, "Failed to publish a message")
 					log.Printf(" [x] Sent %s\n", body)
+					for d := range *app.mq_consumer {
+						if corrId == d.CorrelationId {
+							log.Printf(" [x] Received %s\n", string(d.Body))
+							failOnError(err, "Failed to convert body to integer")
+
+							msg := tgbotapi.NewMessage(update.Message.Chat.ID, "")
+							var s SendMsg
+							err = json.Unmarshal(d.Body, &s)
+							failOnError(err, "Failed to decode msg")
+							msg.Text = s.Text
+
+							_, err := app.tg_bot.Send(msg)
+							failOnError(err, "Failed to send msg to user")
+							break
+						}
+					}
 				}
 			} else {
 				body := update.Message.Text
@@ -201,6 +240,6 @@ func main() {
 	}
 
 	// a := App{config}
-	a := App{config, nil, nil, nil, nil}
+	a := App{config, nil, nil, nil, nil, nil}
 	a.StartBot()
 }
