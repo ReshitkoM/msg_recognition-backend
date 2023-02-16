@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io/ioutil"
 
-	// "log"
 	"os"
+	"strconv"
 	"time"
 
 	// tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -37,7 +37,7 @@ type App struct {
 	mq_context  *context.Context
 	mq_queue    *amqp.Queue
 	mq_channel  *amqp.Channel
-	mq_consumer *<-chan amqp.Delivery
+	mq_consumer <-chan amqp.Delivery
 }
 
 type SendMsg struct {
@@ -59,14 +59,11 @@ func (app *App) StartBot() {
 	u.Timeout = 60
 
 	// Create a new cancellable background context. Calling `cancel()` leads to the cancellation of the context
-	ctx := context.Background()
-	ctx, cancel := context.WithCancel(ctx)
+	ctx0 := context.Background()
+	ctx0, cancel := context.WithCancel(ctx0)
 
 	// `updates` is a golang channel which receives telegram updates
 	updates := bot.GetUpdatesChan(u)
-
-	// Pass cancellable context to goroutine
-	go app.receiveUpdates(ctx, updates)
 
 	//MQ
 	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
@@ -101,9 +98,11 @@ func (app *App) StartBot() {
 		nil,    // args
 	)
 	failOnError(err, "Failed to register a consumer")
-	app.mq_consumer = &msgs
+	app.mq_consumer = msgs
 	defer cancelmq()
 
+	// Pass cancellable context to goroutine
+	go app.receiveUpdates(ctx0, updates)
 	// Tell the user the bot is online
 	log.Println("Start listening for updates. Press enter to stop")
 
@@ -155,7 +154,7 @@ func (app *App) receiveUpdates(ctx context.Context, updates tgbotapi.UpdatesChan
 					// }
 
 					//
-					corrId := "42"
+					// corrId := "42"
 
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
@@ -168,44 +167,64 @@ func (app *App) receiveUpdates(ctx context.Context, updates tgbotapi.UpdatesChan
 						false,       // immediate
 						amqp.Publishing{
 							ContentType:   "text/plain",
-							CorrelationId: corrId,
+							CorrelationId: strconv.FormatInt(update.Message.Chat.ID, 10),
 							ReplyTo:       app.mq_queue.Name,
 							Body:          []byte(body),
 						})
 					failOnError(err, "Failed to publish a message")
 					log.Printf(" [x] Sent %s\n", body)
-					for d := range *app.mq_consumer {
-						if corrId == d.CorrelationId {
-							log.Printf(" [x] Received %s\n", string(d.Body))
-							failOnError(err, "Failed to convert body to integer")
+					msg := tgbotapi.NewMessage(update.Message.Chat.ID, "")
 
-							msg := tgbotapi.NewMessage(update.Message.Chat.ID, "")
-							var s SendMsg
-							err = json.Unmarshal(d.Body, &s)
-							failOnError(err, "Failed to decode msg")
-							msg.Text = s.Text
+					msg.Text = "your request is being processed"
 
-							_, err := app.tg_bot.Send(msg)
-							failOnError(err, "Failed to send msg to user")
-							break
-						}
-					}
+					_, err = app.tg_bot.Send(msg)
+					failOnError(err, "Failed to send msg to user")
+
+					// for d := range *app.mq_consumer {
+					// 	if corrId == d.CorrelationId {
+					// 		log.Printf(" [x] Received %s\n", string(d.Body))
+					// 		failOnError(err, "Failed to convert body to integer")
+
+					// 		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "")
+					// 		var s SendMsg
+					// 		err = json.Unmarshal(d.Body, &s)
+					// 		failOnError(err, "Failed to decode msg")
+					// 		msg.Text = s.Text
+
+					// 		_, err := app.tg_bot.Send(msg)
+					// 		failOnError(err, "Failed to send msg to user")
+					// 		break
+					// 	}
+					// }
 				}
 			} else {
-				body := update.Message.Text
-				err := app.mq_channel.PublishWithContext(ctx,
-					"",                // exchange
-					app.mq_queue.Name, // routing key
-					false,             // mandatory
-					false,             // immediate
-					amqp.Publishing{
-						ContentType: "text/plain",
-						Body:        []byte(body),
-					})
-				failOnError(err, "Failed to publish a message")
-				log.Printf(" [x] Sent %s\n", body)
+				// body := update.Message.Text
+				// err := app.mq_channel.PublishWithContext(ctx,
+				// 	"",                // exchange
+				// 	app.mq_queue.Name, // routing key
+				// 	false,             // mandatory
+				// 	false,             // immediate
+				// 	amqp.Publishing{
+				// 		ContentType: "text/plain",
+				// 		Body:        []byte(body),
+				// 	})
+				// failOnError(err, "Failed to publish a message")
+				// log.Printf(" [x] Sent %s\n", body)
 			}
+		case d := <- app.mq_consumer:
+			id, err := strconv.ParseInt(d.CorrelationId, 10, 64)
+			if err != nil {
+				failOnError(err, "Failed to parse user id")
+			}
+			msg := tgbotapi.NewMessage(id, "")
+			var s SendMsg
+			err = json.Unmarshal(d.Body, &s)
+			failOnError(err, "Failed to decode msg")
+			msg.Text = s.Text
 
+			_, err = app.tg_bot.Send(msg)
+			failOnError(err, "Failed to send msg to user")
+			// break
 		}
 	}
 }
