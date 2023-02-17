@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	// "context"
+	"encoding/binary"
 	"fmt"
 	"io/ioutil"
 
@@ -113,6 +113,48 @@ func (app *App) StartBot() {
 }
 
 // tg bot
+func (app *App) getTGFile(fileID string) ([]byte){
+	//TODO dont fail, just return error
+	url, err := app.tg_bot.GetFileDirectURL(fileID)
+	failOnError(err, "Failed to get file url")
+	resp, err := http.Get(url)
+	failOnError(err, "Failed to get the file")
+	defer resp.Body.Close()
+	bytes, err := io.ReadAll(resp.Body)
+	failOnError(err, "Failed to read the file")
+	return bytes
+}
+
+func (app *App) sendVoiceToTextReq(voice []byte, corrId string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	//
+	var err = app.mq_channel.PublishWithContext(ctx,
+		"",          // exchange
+		"rpc_queue", // routing key
+		false,       // mandatory
+		false,       // immediate
+		amqp.Publishing{
+			ContentType:   "text/plain",
+			CorrelationId: corrId,
+			ReplyTo:       app.mq_queue.Name,
+			Body:          voice,
+		})
+	failOnError(err, "Failed to publish a message")
+}
+
+func (app *App) processReqResult(msg amqp.Delivery) (chatID int64, text string) {
+	chatID, err := strconv.ParseInt(msg.CorrelationId, 10, 64)
+	if err != nil {
+		failOnError(err, "Failed to parse user id")
+	}
+	var s SendMsg
+	err = json.Unmarshal(msg.Body, &s)
+	failOnError(err, "Failed to decode msg")
+	text = s.Text
+	return chatID, text
+}
+
 func (app *App) receiveUpdates(ctx context.Context, updates tgbotapi.UpdatesChannel) {
 	// `for {` means the loop is infinite until we manually stop it
 	for {
@@ -125,106 +167,23 @@ func (app *App) receiveUpdates(ctx context.Context, updates tgbotapi.UpdatesChan
 			log.Println(update.Message.Text)
 			//
 			if update.Message.Voice != nil {
-				//tmp write voice into file
-				//file, err := app.tg_bot.GetFile(tgbotapi.FileConfig{update.Message.Voice.FileID})
-				file2, _ := app.tg_bot.GetFileDirectURL(update.Message.Voice.FileID)
-				if file2 != "" {
-					// out, err := os.Create("test.ogg")
-					// if err != nil {
-					// 	return
-					// }
-					// defer out.Close()
+				var voiceBytes = app.getTGFile(update.Message.Voice.FileID)
+				log.Println("Received " + fmt.Sprint(binary.Size(voiceBytes)) + "bytes.")
 
-					resp, err := http.Get(file2)
-					if err != nil {
-						return
-					}
-					defer resp.Body.Close()
+				app.sendVoiceToTextReq(voiceBytes, strconv.FormatInt(update.Message.Chat.ID, 10))
 
-					b, err := io.ReadAll(resp.Body)
-					if err != nil {
-						return
-					}
-					b2 := string(b)
-
-					// Writer the body to file
-					// _, err = io.Copy(out, resp.Body)
-					// if err != nil {
-					// 	return
-					// }
-
-					//
-					// corrId := "42"
-
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-					//
-					body := b2
-					err = app.mq_channel.PublishWithContext(ctx,
-						"",          // exchange
-						"rpc_queue", // routing key
-						false,       // mandatory
-						false,       // immediate
-						amqp.Publishing{
-							ContentType:   "text/plain",
-							CorrelationId: strconv.FormatInt(update.Message.Chat.ID, 10),
-							ReplyTo:       app.mq_queue.Name,
-							Body:          []byte(body),
-						})
-					failOnError(err, "Failed to publish a message")
-					log.Printf(" [x] Sent %s\n", body)
-					msg := tgbotapi.NewMessage(update.Message.Chat.ID, "")
-
-					msg.Text = "your request is being processed"
-
-					_, err = app.tg_bot.Send(msg)
-					failOnError(err, "Failed to send msg to user")
-
-					// for d := range *app.mq_consumer {
-					// 	if corrId == d.CorrelationId {
-					// 		log.Printf(" [x] Received %s\n", string(d.Body))
-					// 		failOnError(err, "Failed to convert body to integer")
-
-					// 		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "")
-					// 		var s SendMsg
-					// 		err = json.Unmarshal(d.Body, &s)
-					// 		failOnError(err, "Failed to decode msg")
-					// 		msg.Text = s.Text
-
-					// 		_, err := app.tg_bot.Send(msg)
-					// 		failOnError(err, "Failed to send msg to user")
-					// 		break
-					// 	}
-					// }
-				}
+				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "your request is being processed")
+				var _, err = app.tg_bot.Send(msg)
+				failOnError(err, "Failed to send msg to user")
 			} else {
-				// body := update.Message.Text
-				// err := app.mq_channel.PublishWithContext(ctx,
-				// 	"",                // exchange
-				// 	app.mq_queue.Name, // routing key
-				// 	false,             // mandatory
-				// 	false,             // immediate
-				// 	amqp.Publishing{
-				// 		ContentType: "text/plain",
-				// 		Body:        []byte(body),
-				// 	})
-				// failOnError(err, "Failed to publish a message")
-				// log.Printf(" [x] Sent %s\n", body)
+
 			}
 		case d := <- app.mq_consumer:
-			id, err := strconv.ParseInt(d.CorrelationId, 10, 64)
-			if err != nil {
-				failOnError(err, "Failed to parse user id")
-			}
-			msg := tgbotapi.NewMessage(id, "")
-			var s SendMsg
-			err = json.Unmarshal(d.Body, &s)
-			failOnError(err, "Failed to decode msg")
-			msg.Text = s.Text
+			chatID, text := app.processReqResult(d)
 
-			_, err = app.tg_bot.Send(msg)
+			msg := tgbotapi.NewMessage(chatID, text)
+			_, err := app.tg_bot.Send(msg)
 			failOnError(err, "Failed to send msg to user")
-			// break
 		}
 	}
 }
