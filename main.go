@@ -4,21 +4,15 @@ import (
 	"bufio"
 	"encoding/binary"
 	"fmt"
-	"io/ioutil"
 
 	"os"
-	"strconv"
 	"time"
 
-	// tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"context"
-	"encoding/json"
 	"log"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"gopkg.in/yaml.v3"
-
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 type appConfig struct {
@@ -32,10 +26,7 @@ type botConfig struct {
 type App struct {
 	config      *appConfig
 	tg_bot      *telegram
-	mq_context  *context.Context
-	mq_queue    *amqp.Queue
-	mq_channel  *amqp.Channel
-	mq_consumer <-chan amqp.Delivery
+	proc		*processor
 }
 
 type SendMsg struct {
@@ -55,7 +46,7 @@ func (app *App) StartBot() {
 	ch, err := conn.Channel()
 	failOnError(err, "Failed to open a channel")
 	defer ch.Close()
-	app.mq_channel = ch
+	// app.mq_channel = ch
 
 	q, err := ch.QueueDeclare(
 		"hello", // name
@@ -66,9 +57,9 @@ func (app *App) StartBot() {
 		nil,     // arguments
 	)
 	failOnError(err, "Failed to declare a queue")
-	app.mq_queue = &q
-	ctx, cancelmq := context.WithTimeout(context.Background(), 5*time.Second)
-	app.mq_context = &ctx
+	// app.mq_queue = &q
+	_, cancelmq := context.WithTimeout(context.Background(), 5*time.Second)
+	// app.mq_context = &ctx
 
 	msgs, err := ch.Consume(
 		q.Name, // queue
@@ -80,11 +71,12 @@ func (app *App) StartBot() {
 		nil,    // args
 	)
 	failOnError(err, "Failed to register a consumer")
-	app.mq_consumer = msgs
+	// app.mq_consumer = msgs
 	defer cancelmq()
 
+	app.proc = &processor{&q, ch, msgs}
 	// Pass cancellable context to goroutine
-	go app.receiveUpdates(app.tg_bot.TelegramContext, app.tg_bot.TelegramMessageChannel)
+	go app.receiveUpdates()
 	// Tell the user the bot is online
 	log.Println("Start listening for updates. Press enter to stop")
 
@@ -95,60 +87,30 @@ func (app *App) StartBot() {
 
 }
 
-func (app *App) sendVoiceToTextReq(voice []byte, corrId string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	//
-	var err = app.mq_channel.PublishWithContext(ctx,
-		"",          // exchange
-		"rpc_queue", // routing key
-		false,       // mandatory
-		false,       // immediate
-		amqp.Publishing{
-			ContentType:   "text/plain",
-			CorrelationId: corrId,
-			ReplyTo:       app.mq_queue.Name,
-			Body:          voice,
-		})
-	failOnError(err, "Failed to publish a message")
-}
-
-func (app *App) processReqResult(msg amqp.Delivery) (chatID int64, text string) {
-	chatID, err := strconv.ParseInt(msg.CorrelationId, 10, 64)
-	if err != nil {
-		failOnError(err, "Failed to parse user id")
-	}
-	var s SendMsg
-	err = json.Unmarshal(msg.Body, &s)
-	failOnError(err, "Failed to decode msg")
-	text = s.Text
-	return chatID, text
-}
-
-func (app *App) receiveUpdates(ctx context.Context, updates tgbotapi.UpdatesChannel) {
+func (app *App) receiveUpdates() {
 	// `for {` means the loop is infinite until we manually stop it
 	for {
 		select {
 		// stop looping if ctx is cancelled
-		case <-ctx.Done():
+		case <-app.tg_bot.TelegramContext.Done():
 			return
 		// receive update from channel and then handle it
-		case update := <-updates:
+		case update := <-app.tg_bot.TelegramMessageChannel:
 			log.Println(update.Message.Text)
 			//
 			if update.Message.Voice != nil {
 				var voiceBytes = app.tg_bot.getFile(update.Message.Voice.FileID)
 				log.Println("Received " + fmt.Sprint(binary.Size(voiceBytes)) + "bytes.")
 
-				app.sendVoiceToTextReq(voiceBytes, strconv.FormatInt(update.Message.Chat.ID, 10))
+				app.proc.sendVoiceToTextReq(voiceBytes, update.Message.Chat.ID)
 
 				app.tg_bot.send("your request is being processed", update.Message.Chat.ID)
 				// failOnError(err, "Failed to send msg to user")
 			} else {
 
 			}
-		case d := <- app.mq_consumer:
-			chatID, text := app.processReqResult(d)
+		case d := <- app.proc.mq_consumer:
+			chatID, text := app.proc.processReqResult(d)
 
 
 			app.tg_bot.send(text, chatID)
@@ -159,7 +121,7 @@ func (app *App) receiveUpdates(ctx context.Context, updates tgbotapi.UpdatesChan
 
 // config
 func readConf(filename string) (*appConfig, error) {
-	buf, err := ioutil.ReadFile(filename)
+	buf, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
@@ -186,6 +148,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	a := App{config, nil, nil, nil, nil, nil}
+	a := App{config, nil, nil}
 	a.StartBot()
 }
