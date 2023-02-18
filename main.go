@@ -13,9 +13,7 @@ import (
 	// tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"context"
 	"encoding/json"
-	"io"
 	"log"
-	"net/http"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"gopkg.in/yaml.v3"
@@ -33,7 +31,7 @@ type botConfig struct {
 
 type App struct {
 	config      *appConfig
-	tg_bot      *tgbotapi.BotAPI
+	tg_bot      *telegram
 	mq_context  *context.Context
 	mq_queue    *amqp.Queue
 	mq_channel  *amqp.Channel
@@ -46,25 +44,9 @@ type SendMsg struct {
 
 func (app *App) StartBot() {
 	var err error
-	bot, err := tgbotapi.NewBotAPI(app.config.Bot.Token)
-	if err != nil {
-		// Abort if something is wrong
-		log.Panic(err)
-	}
+	// defer channel.Close()
 
-	// Set this to true to log all interactions with telegram servers
-	bot.Debug = true
-	app.tg_bot = bot
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-
-	// Create a new cancellable background context. Calling `cancel()` leads to the cancellation of the context
-	ctx0 := context.Background()
-	ctx0, cancel := context.WithCancel(ctx0)
-
-	// `updates` is a golang channel which receives telegram updates
-	updates := bot.GetUpdatesChan(u)
-
+	app.tg_bot = newTelegram(app.config.Bot.Token)
 	//MQ
 	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
 	failOnError(err, "Failed to connect to RabbitMQ")
@@ -102,27 +84,15 @@ func (app *App) StartBot() {
 	defer cancelmq()
 
 	// Pass cancellable context to goroutine
-	go app.receiveUpdates(ctx0, updates)
+	go app.receiveUpdates(app.tg_bot.TelegramContext, app.tg_bot.TelegramMessageChannel)
 	// Tell the user the bot is online
 	log.Println("Start listening for updates. Press enter to stop")
 
 	// Wait for a newline symbol, then cancel handling updates
 	bufio.NewReader(os.Stdin).ReadBytes('\n')
-	cancel()
 
-}
+	app.tg_bot.stop()
 
-// tg bot
-func (app *App) getTGFile(fileID string) ([]byte){
-	//TODO dont fail, just return error
-	url, err := app.tg_bot.GetFileDirectURL(fileID)
-	failOnError(err, "Failed to get file url")
-	resp, err := http.Get(url)
-	failOnError(err, "Failed to get the file")
-	defer resp.Body.Close()
-	bytes, err := io.ReadAll(resp.Body)
-	failOnError(err, "Failed to read the file")
-	return bytes
 }
 
 func (app *App) sendVoiceToTextReq(voice []byte, corrId string) {
@@ -167,23 +137,22 @@ func (app *App) receiveUpdates(ctx context.Context, updates tgbotapi.UpdatesChan
 			log.Println(update.Message.Text)
 			//
 			if update.Message.Voice != nil {
-				var voiceBytes = app.getTGFile(update.Message.Voice.FileID)
+				var voiceBytes = app.tg_bot.getFile(update.Message.Voice.FileID)
 				log.Println("Received " + fmt.Sprint(binary.Size(voiceBytes)) + "bytes.")
 
 				app.sendVoiceToTextReq(voiceBytes, strconv.FormatInt(update.Message.Chat.ID, 10))
 
-				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "your request is being processed")
-				var _, err = app.tg_bot.Send(msg)
-				failOnError(err, "Failed to send msg to user")
+				app.tg_bot.send("your request is being processed", update.Message.Chat.ID)
+				// failOnError(err, "Failed to send msg to user")
 			} else {
 
 			}
 		case d := <- app.mq_consumer:
 			chatID, text := app.processReqResult(d)
 
-			msg := tgbotapi.NewMessage(chatID, text)
-			_, err := app.tg_bot.Send(msg)
-			failOnError(err, "Failed to send msg to user")
+
+			app.tg_bot.send(text, chatID)
+			// failOnError(err, "Failed to send msg to user")
 		}
 	}
 }
@@ -217,7 +186,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// a := App{config}
 	a := App{config, nil, nil, nil, nil, nil}
 	a.StartBot()
 }
