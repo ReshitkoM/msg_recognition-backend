@@ -17,7 +17,7 @@ type processor struct {
 	// mq_ctxCancel  context.CancelFunc
 }
 
-func (proc *processor) sendVoiceToTextReq(voice []byte, chatId int64) {
+func (proc *processor) sendVoiceToTextReq(msg []byte, chatId int64) {
 	corrId := strconv.FormatInt(chatId, 10)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -31,7 +31,7 @@ func (proc *processor) sendVoiceToTextReq(voice []byte, chatId int64) {
 			ContentType:   "text/plain",
 			CorrelationId: corrId,
 			ReplyTo:       proc.mq_queue.Name,
-			Body:          voice,
+			Body:          msg,
 		})
 	failOnError(err, "Failed to publish a message")
 }

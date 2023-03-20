@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	b64 "encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 
-	"os"
 	"log"
+	"os"
 
 	"gopkg.in/yaml.v3"
 )
@@ -20,11 +22,16 @@ type botConfig struct {
 }
 
 type App struct {
-	config      *appConfig
-	tg_bot      *telegram
-	proc		*processor
+	config     *appConfig
+	tg_bot     *telegram
+	proc       *processor
+	usrLangMap map[int64]string
 }
 
+type RpcReq struct {
+	Audio string `json:"audio"`
+	Lang  string `json:"lang"`
+}
 type SendMsg struct {
 	Text string `json:"text"`
 }
@@ -58,16 +65,28 @@ func (app *App) receiveUpdates() {
 				var voiceBytes = app.tg_bot.getFile(update.Message.Voice.FileID)
 				log.Println("Received " + fmt.Sprint(binary.Size(voiceBytes)) + "bytes.")
 
-				app.proc.sendVoiceToTextReq(voiceBytes, update.Message.Chat.ID)
+				langCode, ok := app.usrLangMap[update.Message.Chat.ID]
+				if !ok {
+					langCode = "EN"
+				}
+				msg := RpcReq{b64.StdEncoding.EncodeToString(voiceBytes), langCode}
+				b, _ := json.Marshal(msg)
+				app.proc.sendVoiceToTextReq(b, update.Message.Chat.ID)
 
 				app.tg_bot.send("your request is being processed", update.Message.Chat.ID)
 				// failOnError(err, "Failed to send msg to user")
-			} else {
-
 			}
-		case d := <- app.proc.mq_consumer:
+			if update.Message.IsCommand() {
+				log.Println("command: " + update.Message.Command())
+				switch update.Message.Command() {
+				case "RU":
+					app.usrLangMap[update.Message.Chat.ID] = "RU"
+				case "EN":
+					app.usrLangMap[update.Message.Chat.ID] = "EN"
+				}
+			}
+		case d := <-app.proc.mq_consumer:
 			chatID, text := app.proc.processReqResult(d)
-
 
 			app.tg_bot.send(text, chatID)
 			// failOnError(err, "Failed to send msg to user")
@@ -109,6 +128,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	a := App{config, nil, nil}
+	a := App{config, nil, nil, make(map[int64]string)}
 	a.StartBot()
 }
