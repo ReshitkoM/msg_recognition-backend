@@ -2,18 +2,19 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"time"
-	"encoding/json"
+
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type processor struct {
 	mq_connection *amqp.Connection
-	mq_queue    *amqp.Queue
-	mq_channel  *amqp.Channel
-	mq_consumer <-chan amqp.Delivery
-	mq_ctxCancel context.CancelFunc
+	mq_queue      *amqp.Queue
+	mq_channel    *amqp.Channel
+	mq_consumer   <-chan amqp.Delivery
+	// mq_ctxCancel  context.CancelFunc
 }
 
 func (proc *processor) sendVoiceToTextReq(voice []byte, chatId int64) {
@@ -50,15 +51,19 @@ func (proc *processor) processReqResult(msg amqp.Delivery) (chatID int64, text s
 func (proc *processor) stop() {
 	proc.mq_connection.Close()
 	proc.mq_channel.Close()
-	proc.mq_ctxCancel()
+	// proc.mq_ctxCancel()
 }
 
 func newProcessor() *processor {
+	//TODO process errors
 	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
 	failOnError(err, "Failed to connect to RabbitMQ")
 	// defer conn.Close()
 
 	ch, err := conn.Channel()
+	if (err != nil) {
+		conn.Close()
+	}
 	failOnError(err, "Failed to open a channel")
 	// defer ch.Close()
 
@@ -70,9 +75,13 @@ func newProcessor() *processor {
 		false,   // no-wait
 		nil,     // arguments
 	)
+	if (err != nil) {
+		ch.Close()
+		conn.Close()
+	}
 	failOnError(err, "Failed to declare a queue")
 	// app.mq_queue = &q
-	_, cancelmq := context.WithTimeout(context.Background(), 5*time.Second)
+	// _, cancelmq := context.WithTimeout(context.Background(), 5*time.Second)
 	// app.mq_context = &ctx
 
 	msgs, err := ch.Consume(
@@ -84,7 +93,12 @@ func newProcessor() *processor {
 		false,  // no-wait
 		nil,    // args
 	)
+	if (err != nil) {
+		// cancelmq()
+		ch.Close()
+		conn.Close()
+	}
 	failOnError(err, "Failed to register a consumer")
 	// defer cancelmq()
-	return &processor{conn, &q, ch, msgs, cancelmq}
+	return &processor{conn, &q, ch, msgs}
 }
