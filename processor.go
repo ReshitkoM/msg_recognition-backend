@@ -44,7 +44,11 @@ func (proc *processor) processReqResult(msg amqp.Delivery) (chatID int64, text s
 	var s SendMsg
 	err = json.Unmarshal(msg.Body, &s)
 	failOnError(err, "Failed to decode msg")
-	text = s.Text
+	if !s.Success {
+		text = "An error occured. Try again later."
+	} else {
+		text = s.Text
+	}
 	return chatID, text
 }
 
