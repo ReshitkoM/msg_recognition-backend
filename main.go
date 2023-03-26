@@ -33,7 +33,7 @@ type RpcReq struct {
 	Lang  string `json:"lang"`
 }
 type SendMsg struct {
-	Text string `json:"text",omitempty`
+	Text string `json:"text,omitempty"`
 	Success bool `json:"success"`
 }
 
