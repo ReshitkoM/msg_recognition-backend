@@ -1,3 +1,3 @@
 all:
 	go build
-	go run .
+	go run . config.yaml

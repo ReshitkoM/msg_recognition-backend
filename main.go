@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"bufio"
 	b64 "encoding/base64"
 	"encoding/binary"
@@ -33,8 +34,8 @@ type RpcReq struct {
 	Lang  string `json:"lang"`
 }
 type SendMsg struct {
-	Text string `json:"text,omitempty"`
-	Success bool `json:"success"`
+	Text    string `json:"text,omitempty"`
+	Success bool   `json:"success"`
 }
 
 func (app *App) StartBot() {
@@ -60,11 +61,10 @@ func (app *App) receiveUpdates() {
 			return
 		// receive update from channel and then handle it
 		case update := <-app.tg_bot.TelegramMessageChannel:
-			log.Println(update.Message.Text)
 			//
 			if update.Message.Voice != nil {
 				var voiceBytes = app.tg_bot.getFile(update.Message.Voice.FileID)
-				log.Println("Received " + fmt.Sprint(binary.Size(voiceBytes)) + "bytes.")
+				log.Printf("Received %d bytes from %d",binary.Size(voiceBytes), update.Message.Chat.ID)
 
 				langCode, ok := app.usrLangMap[update.Message.Chat.ID]
 				if !ok {
@@ -78,7 +78,7 @@ func (app *App) receiveUpdates() {
 				// failOnError(err, "Failed to send msg to user")
 			}
 			if update.Message.IsCommand() {
-				log.Println("command: " + update.Message.Command())
+				log.Printf("Received command: %s from %d",update.Message.Command(), update.Message.Chat.ID)
 				switch update.Message.Command() {
 				case "RU":
 					app.usrLangMap[update.Message.Chat.ID] = "RU"
@@ -90,7 +90,7 @@ func (app *App) receiveUpdates() {
 			chatID, text := app.proc.processReqResult(d)
 
 			app.tg_bot.send(text, chatID)
-			// failOnError(err, "Failed to send msg to user")
+			log.Printf("Sending result from backend. Id: %d, text: %s", chatID, text)
 		}
 	}
 }
@@ -124,10 +124,20 @@ func failOnError(err error, msg string) {
 }
 
 func main() {
-	config, err := readConf("config.yaml")
+	var configName string
+	flag.StringVar(&configName, "configName", "config.yaml", "a path to config file")
+	flag.Parse()
+
+	config, err := readConf(configName)
 	if err != nil {
 		log.Fatal(err)
 	}
+	f, err := os.OpenFile("logfile", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("error opening file: %v", err)
+	}
+	defer f.Close()
+	log.SetOutput(f)
 
 	a := App{config, nil, nil, make(map[int64]string)}
 	a.StartBot()
