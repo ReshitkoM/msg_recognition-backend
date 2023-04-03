@@ -3,4 +3,4 @@ config.yaml
 info
 App/Bot/*
 test.ogg
-msg_recognition_backend
+msg_recognition-backend
