@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"time"
+	"log"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -58,18 +59,28 @@ func (proc *processor) stop() {
 	// proc.mq_ctxCancel()
 }
 
-func newProcessor() *processor {
+func newProcessor(mqConnectString string) *processor {
 	//TODO process errors
-	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
-	failOnError(err, "Failed to connect to RabbitMQ")
-	// defer conn.Close()
-
+	
+	var conn *amqp.Connection;
+	for i := 0; i < 10; i++ {
+		conn0, err := amqp.Dial(mqConnectString)
+		if err != nil {
+			if i == 9 {
+				failOnError(err, "Failed to connect to RabbitMQ")
+			}
+			log.Println("Failed to connect to mq. Retrying...")
+			time.Sleep(5 * time.Second)
+		} else {
+			conn = conn0
+			break
+		}
+	}
 	ch, err := conn.Channel()
-	if (err != nil) {
+	if err != nil {
 		conn.Close()
 	}
 	failOnError(err, "Failed to open a channel")
-	// defer ch.Close()
 
 	q, err := ch.QueueDeclare(
 		"hello", // name
@@ -79,15 +90,11 @@ func newProcessor() *processor {
 		false,   // no-wait
 		nil,     // arguments
 	)
-	if (err != nil) {
+	if err != nil {
 		ch.Close()
 		conn.Close()
 	}
 	failOnError(err, "Failed to declare a queue")
-	// app.mq_queue = &q
-	// _, cancelmq := context.WithTimeout(context.Background(), 5*time.Second)
-	// app.mq_context = &ctx
-
 	msgs, err := ch.Consume(
 		q.Name, // queue
 		"",     // consumer
@@ -97,7 +104,7 @@ func newProcessor() *processor {
 		false,  // no-wait
 		nil,    // args
 	)
-	if (err != nil) {
+	if err != nil {
 		// cancelmq()
 		ch.Close()
 		conn.Close()

@@ -16,7 +16,7 @@ type telegram struct {
 
 func newTelegram(botToken string) *telegram {
 	bot, err := tgbotapi.NewBotAPI(botToken)
-	failOnError(err, "")
+	failOnError(err, "Cannot create tg bot")
 	bot.Debug = true
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60

@@ -1,17 +1,18 @@
 package main
 
 import (
-	"flag"
 	"bufio"
 	b64 "encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"flag"
 	"fmt"
 
 	"log"
 	"os"
 
 	"gopkg.in/yaml.v3"
+	"sync"
 )
 
 type appConfig struct {
@@ -39,32 +40,42 @@ type SendMsg struct {
 }
 
 func (app *App) StartBot() {
-	app.tg_bot = newTelegram(app.config.Bot.Token)
-	app.proc = newProcessor()
-	defer app.stop()
+	var mqConnectString string
+	if value, ok := os.LookupEnv("MQ_CONNECTION_STRING"); ok {
+        mqConnectString = value
+    } else {
+		mqConnectString = "amqp://guest:guest@localhost:5672/"
+	}
 
+	app.proc = newProcessor(mqConnectString)
+	app.tg_bot = newTelegram(app.config.Bot.Token)
+	defer app.stop()
+	var waitgroup sync.WaitGroup
+	waitgroup.Add(1)
 	// Pass cancellable context to goroutine
-	go app.receiveUpdates()
+	go app.receiveUpdates(&waitgroup)
 	// Tell the user the bot is online
 	log.Println("Start listening for updates. Press enter to stop")
 
 	// Wait for a newline symbol, then cancel handling updates
+	waitgroup.Wait()
 	bufio.NewReader(os.Stdin).ReadBytes('\n')
 }
 
-func (app *App) receiveUpdates() {
+func (app *App) receiveUpdates(waitgroup *sync.WaitGroup) {
 	// `for {` means the loop is infinite until we manually stop it
 	for {
 		select {
 		// stop looping if ctx is cancelled
 		case <-app.tg_bot.TelegramContext.Done():
+			waitgroup.Done()
 			return
 		// receive update from channel and then handle it
 		case update := <-app.tg_bot.TelegramMessageChannel:
 			//
 			if update.Message.Voice != nil {
 				var voiceBytes = app.tg_bot.getFile(update.Message.Voice.FileID)
-				log.Printf("Received %d bytes from %d",binary.Size(voiceBytes), update.Message.Chat.ID)
+				log.Printf("Received %d bytes from %d", binary.Size(voiceBytes), update.Message.Chat.ID)
 
 				langCode, ok := app.usrLangMap[update.Message.Chat.ID]
 				if !ok {
@@ -78,7 +89,7 @@ func (app *App) receiveUpdates() {
 				// failOnError(err, "Failed to send msg to user")
 			}
 			if update.Message.IsCommand() {
-				log.Printf("Received command: %s from %d",update.Message.Command(), update.Message.Chat.ID)
+				log.Printf("Received command: %s from %d", update.Message.Command(), update.Message.Chat.ID)
 				switch update.Message.Command() {
 				case "RU":
 					app.usrLangMap[update.Message.Chat.ID] = "RU"

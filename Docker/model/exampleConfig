@@ -1,0 +1,6 @@
+[log]
+fileName=logFile.log
+logLevel=info
+  
+[mq]
+rpcQueue= rpc_queue

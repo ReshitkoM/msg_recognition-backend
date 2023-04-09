@@ -1,0 +1,40 @@
+version: "2.1"
+services:
+  rabbitmq:
+    image: rabbitmq:3.11.11-management
+    hostname: ${MQ_HOST}
+    restart: always
+    environment:
+      - RABBITMQ_DEFAULT_USER=${MQ_USER}
+      - RABBITMQ_DEFAULT_PASS=${MQ_PSWD}
+      - RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbit log_levels [{connection,error},{default,error}] disk_free_limit 2147483648
+    ports:
+      - 15672:15672
+
+  backend:
+    image: backend
+    command: /app/main config.yaml
+    environment:
+      - MQ_CONNECTION_STRING=amqp://${MQ_USER}:${MQ_PSWD}@${MQ_HOST}:5672/
+    expose:
+      - 8081/tcp
+      - 8082/tcp
+    depends_on:
+      - rabbitmq
+    volumes:
+      - type: bind
+        source: ${PWD}/backend/config.yaml
+        target: /app/config.yaml
+
+  model_server:
+    image: ms
+    command: make run
+    environment:
+      - MQ_CONNECTION_STRING=amqp://${MQ_USER}:${MQ_PSWD}@${MQ_HOST}:5672/
+    depends_on:
+      - rabbitmq
+    volumes:
+      - type: bind
+        source: ${PWD}/model/config
+        target: /app/config
+
