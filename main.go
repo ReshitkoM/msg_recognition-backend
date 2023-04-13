@@ -11,8 +11,10 @@ import (
 	"log"
 	"os"
 
-	"gopkg.in/yaml.v3"
 	"sync"
+	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type appConfig struct {
@@ -27,7 +29,12 @@ type App struct {
 	config     *appConfig
 	tg_bot     *telegram
 	proc       *processor
-	usrLangMap map[int64]string
+	usrLangMap map[int64]*userInfo
+}
+
+type userInfo struct {
+	Lang        string
+	LastReqTime time.Time
 }
 
 type RpcReq struct {
@@ -42,8 +49,8 @@ type SendMsg struct {
 func (app *App) StartBot() {
 	var mqConnectString string
 	if value, ok := os.LookupEnv("MQ_CONNECTION_STRING"); ok {
-        mqConnectString = value
-    } else {
+		mqConnectString = value
+	} else {
 		mqConnectString = "amqp://guest:guest@localhost:5672/"
 	}
 
@@ -72,29 +79,36 @@ func (app *App) receiveUpdates(waitgroup *sync.WaitGroup) {
 			return
 		// receive update from channel and then handle it
 		case update := <-app.tg_bot.TelegramMessageChannel:
-			//
+			userInf, ok := app.usrLangMap[update.Message.Chat.ID]
+			if !ok {
+				t := time.Time{}
+				userInf = &userInfo{"EN", t}
+				app.usrLangMap[update.Message.Chat.ID] = userInf
+			}
 			if update.Message.Voice != nil {
-				var voiceBytes = app.tg_bot.getFile(update.Message.Voice.FileID)
-				log.Printf("Received %d bytes from %d", binary.Size(voiceBytes), update.Message.Chat.ID)
+				if time.Since(userInf.LastReqTime) < time.Minute {
+					app.tg_bot.send("Too many requests, try again later.", update.Message.Chat.ID)
+				} else {
+					t := time.Now()
+					userInf.LastReqTime = t
+					var voiceBytes = app.tg_bot.getFile(update.Message.Voice.FileID)
+					log.Printf("Received %d bytes from %d", binary.Size(voiceBytes), update.Message.Chat.ID)
 
-				langCode, ok := app.usrLangMap[update.Message.Chat.ID]
-				if !ok {
-					langCode = "EN"
+					msg := RpcReq{b64.StdEncoding.EncodeToString(voiceBytes), userInf.Lang}
+					b, _ := json.Marshal(msg)
+					app.proc.sendVoiceToTextReq(b, update.Message.Chat.ID)
+
+					app.tg_bot.send("your request is being processed", update.Message.Chat.ID)
+					// failOnError(err, "Failed to send msg to user")
 				}
-				msg := RpcReq{b64.StdEncoding.EncodeToString(voiceBytes), langCode}
-				b, _ := json.Marshal(msg)
-				app.proc.sendVoiceToTextReq(b, update.Message.Chat.ID)
-
-				app.tg_bot.send("your request is being processed", update.Message.Chat.ID)
-				// failOnError(err, "Failed to send msg to user")
 			}
 			if update.Message.IsCommand() {
 				log.Printf("Received command: %s from %d", update.Message.Command(), update.Message.Chat.ID)
 				switch update.Message.Command() {
 				case "RU":
-					app.usrLangMap[update.Message.Chat.ID] = "RU"
+					userInf.Lang = "RU"
 				case "EN":
-					app.usrLangMap[update.Message.Chat.ID] = "EN"
+					userInf.Lang = "EN"
 				}
 			}
 		case d := <-app.proc.mq_consumer:
@@ -150,6 +164,6 @@ func main() {
 	defer f.Close()
 	log.SetOutput(f)
 
-	a := App{config, nil, nil, make(map[int64]string)}
+	a := App{config, nil, nil, make(map[int64]*userInfo)}
 	a.StartBot()
 }
